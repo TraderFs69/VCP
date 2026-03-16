@@ -6,11 +6,11 @@ from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
 
-st.title("Minervini VCP Scanner")
+st.title("Minervini VCP Scanner — Advanced")
 
 API_KEY = st.secrets["POLYGON_API_KEY"]
 
-# Charger la liste du S&P500
+# Charger S&P500
 sp500 = pd.read_csv(
     "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
 )
@@ -23,10 +23,10 @@ start = end - timedelta(days=400)
 results = []
 
 # -----------------------------
-# Télécharger données Polygon
+# Polygon data
 # -----------------------------
 
-def get_polygon_data(ticker):
+def get_data(ticker):
 
     url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start.date()}/{end.date()}?adjusted=true&limit=500&apiKey={API_KEY}"
 
@@ -54,7 +54,7 @@ def get_polygon_data(ticker):
     return df[["close","high","low","volume"]]
 
 # -----------------------------
-# Trend Template (Minervini)
+# Trend Template
 # -----------------------------
 
 def trend_template(df):
@@ -76,7 +76,7 @@ def trend_template(df):
     return cond1 and cond2 and cond3 and cond4 and cond5
 
 # -----------------------------
-# Détection des pivots
+# Pivot detection
 # -----------------------------
 
 def find_pivots(df):
@@ -97,7 +97,7 @@ def find_pivots(df):
     return pivot_high, pivot_low
 
 # -----------------------------
-# Contraction VCP
+# VCP contraction
 # -----------------------------
 
 def vcp_contraction(df):
@@ -105,16 +105,20 @@ def vcp_contraction(df):
     pivot_high, pivot_low = find_pivots(df)
 
     if len(pivot_high) < 3 or len(pivot_low) < 3:
-        return False
+        return False, 0
 
     highs = pivot_high.tail(3)
     lows = pivot_low.tail(3)
 
-    contraction1 = (highs.iloc[0] - lows.iloc[0]) / highs.iloc[0]
-    contraction2 = (highs.iloc[1] - lows.iloc[1]) / highs.iloc[1]
-    contraction3 = (highs.iloc[2] - lows.iloc[2]) / highs.iloc[2]
+    c1 = (highs.iloc[0] - lows.iloc[0]) / highs.iloc[0]
+    c2 = (highs.iloc[1] - lows.iloc[1]) / highs.iloc[1]
+    c3 = (highs.iloc[2] - lows.iloc[2]) / highs.iloc[2]
 
-    return contraction1 > contraction2 > contraction3
+    contraction = c1 > c2 > c3
+
+    score = (c1 + c2 + c3)
+
+    return contraction, score
 
 # -----------------------------
 # Volume dry-up
@@ -128,7 +132,7 @@ def volume_dryup(df):
     return vol10.iloc[-1] < 0.7 * vol50.iloc[-1]
 
 # -----------------------------
-# Prix proche breakout
+# Breakout proximity
 # -----------------------------
 
 def near_breakout(df):
@@ -139,40 +143,52 @@ def near_breakout(df):
     return price >= 0.92 * resistance
 
 # -----------------------------
-# Détection finale VCP
+# Relative strength
 # -----------------------------
 
-def detect_vcp(df):
+def relative_strength(df):
 
-    return (
-        vcp_contraction(df)
-        and volume_dryup(df)
-        and near_breakout(df)
-    )
+    close = df["close"]
+
+    return (close.iloc[-1] / close.iloc[0]) - 1
 
 # -----------------------------
-# Scanner principal
+# Scanner
 # -----------------------------
 
 progress = st.progress(0)
 
 for i, ticker in enumerate(tickers):
 
-    df = get_polygon_data(ticker)
+    df = get_data(ticker)
 
     if df is None or len(df) < 200:
         continue
 
     try:
 
-        if trend_template(df) and detect_vcp(df):
+        if trend_template(df):
 
-            price = df["close"].iloc[-1]
+            vcp_ok, vcp_score = vcp_contraction(df)
 
-            results.append({
-                "Ticker": ticker,
-                "Price": round(price,2)
-            })
+            if vcp_ok and volume_dryup(df) and near_breakout(df):
+
+                price = df["close"].iloc[-1]
+
+                rs = relative_strength(df)
+
+                vol_today = df["volume"].iloc[-1]
+                vol_avg = df["volume"].rolling(50).mean().iloc[-1]
+
+                breakout_volume = vol_today > 1.5 * vol_avg
+
+                results.append({
+                    "Ticker": ticker,
+                    "Price": round(price,2),
+                    "RS": round(rs,2),
+                    "VCP Score": round(vcp_score,3),
+                    "Breakout Volume": breakout_volume
+                })
 
     except:
         continue
@@ -185,15 +201,17 @@ for i, ticker in enumerate(tickers):
 
 df_results = pd.DataFrame(results)
 
-st.subheader("Minervini VCP Candidates")
+st.subheader("Top VCP Setups")
 
 if len(df_results) > 0:
 
-    st.dataframe(
-        df_results.sort_values("Price", ascending=False),
-        use_container_width=True
+    df_results = df_results.sort_values(
+        ["RS","VCP Score"],
+        ascending=False
     )
+
+    st.dataframe(df_results, use_container_width=True)
 
 else:
 
-    st.write("No VCP setups detected today.")
+    st.write("No setups detected today.")
